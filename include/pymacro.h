@@ -89,10 +89,12 @@
 /* Check if pointer "p" is aligned to "a"-bytes boundary. */
 #define _Py_IS_ALIGNED(p, a) (!((uintptr_t)(p) & (uintptr_t)((a) - 1)))
 
+#ifndef Py_UNUSED
 #ifdef __GNUC__
 #define Py_UNUSED(name) _unused_ ## name __attribute__((unused))
 #else
 #define Py_UNUSED(name) _unused_ ## name
+#endif
 #endif
 
 #endif /* Py_PYMACRO_H */

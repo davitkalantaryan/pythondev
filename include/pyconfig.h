@@ -226,7 +226,7 @@ typedef int pid_t;
 
 /* ------------------------------------------------------------------------*/
 /* egcs/gnu-win32 defines __GNUC__ and _WIN32 */
-#if defined(__GNUC__) && defined(_WIN32)
+#if defined(__GNUC__) && defined(_WIN32) && !defined(_MSC_VER)
 /* XXX These defines are likely incomplete, but should be easy to fix.
    They should be complete enough to build extension modules. */
 /* Suggested by Rene Liebscher <R.Liebscher@gmx.de> to avoid a GCC 2.91.*
