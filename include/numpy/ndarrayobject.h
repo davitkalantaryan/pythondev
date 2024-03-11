@@ -1,17 +1,11 @@
 /*
  * DON'T INCLUDE THIS DIRECTLY.
  */
+#ifndef NUMPY_CORE_INCLUDE_NUMPY_NDARRAYOBJECT_H_
+#define NUMPY_CORE_INCLUDE_NUMPY_NDARRAYOBJECT_H_
 
-#ifndef NPY_NDARRAYOBJECT_H
-#define NPY_NDARRAYOBJECT_H
 #ifdef __cplusplus
-#define CONFUSE_EMACS {
-#define CONFUSE_EMACS2 }
-extern "C" CONFUSE_EMACS
-#undef CONFUSE_EMACS
-#undef CONFUSE_EMACS2
-/* ... otherwise a semi-smart identer (like emacs) tries to indent
-       everything when you're typing */
+extern "C" {
 #endif
 
 #include <Python.h>
@@ -29,7 +23,7 @@ extern "C" CONFUSE_EMACS
 
 /* C-API that requires previous API to be defined */
 
-#define PyArray_DescrCheck(op) (((PyObject*)(op))->ob_type==&PyArrayDescr_Type)
+#define PyArray_DescrCheck(op) PyObject_TypeCheck(op, &PyArrayDescr_Type)
 
 #define PyArray_Check(op) PyObject_TypeCheck(op, &PyArray_Type)
 #define PyArray_CheckExact(op) (((PyObject*)(op))->ob_type == &PyArray_Type)
@@ -51,7 +45,6 @@ extern "C" CONFUSE_EMACS
 
 #define PyArray_CheckScalar(m) (PyArray_IsScalar(m, Generic) ||               \
                                 PyArray_IsZeroDim(m))
-#if PY_MAJOR_VERSION >= 3
 #define PyArray_IsPythonNumber(obj)                                           \
         (PyFloat_Check(obj) || PyComplex_Check(obj) ||                        \
          PyLong_Check(obj) || PyBool_Check(obj))
@@ -60,17 +53,6 @@ extern "C" CONFUSE_EMACS
 #define PyArray_IsPythonScalar(obj)                                           \
         (PyArray_IsPythonNumber(obj) || PyBytes_Check(obj) ||                 \
          PyUnicode_Check(obj))
-#else
-#define PyArray_IsPythonNumber(obj)                                           \
-        (PyInt_Check(obj) || PyFloat_Check(obj) || PyComplex_Check(obj) ||    \
-         PyLong_Check(obj) || PyBool_Check(obj))
-#define PyArray_IsIntegerScalar(obj) (PyInt_Check(obj)                        \
-              || PyLong_Check(obj)                                            \
-              || PyArray_IsScalar((obj), Integer))
-#define PyArray_IsPythonScalar(obj)                                           \
-        (PyArray_IsPythonNumber(obj) || PyString_Check(obj) ||                \
-         PyUnicode_Check(obj))
-#endif
 
 #define PyArray_IsAnyScalar(obj)                                              \
         (PyArray_IsScalar(obj, Generic) || PyArray_IsPythonScalar(obj))
@@ -170,16 +152,17 @@ extern "C" CONFUSE_EMACS
                                             (k)*PyArray_STRIDES(obj)[2] + \
                                             (l)*PyArray_STRIDES(obj)[3]))
 
-static NPY_INLINE void
-PyArray_XDECREF_ERR(PyArrayObject *arr)
+static inline void
+PyArray_DiscardWritebackIfCopy(PyArrayObject *arr)
 {
-    if (arr != NULL) {
-        if (PyArray_FLAGS(arr) & NPY_ARRAY_UPDATEIFCOPY) {
-            PyArrayObject *base = (PyArrayObject *)PyArray_BASE(arr);
-            PyArray_ENABLEFLAGS(base, NPY_ARRAY_WRITEABLE);
-            PyArray_CLEARFLAGS(arr, NPY_ARRAY_UPDATEIFCOPY);
+    PyArrayObject_fields *fa = (PyArrayObject_fields *)arr;
+    if (fa && fa->base) {
+        if (fa->flags & NPY_ARRAY_WRITEBACKIFCOPY) {
+            PyArray_ENABLEFLAGS((PyArrayObject*)fa->base, NPY_ARRAY_WRITEABLE);
+            Py_DECREF(fa->base);
+            fa->base = NULL;
+            PyArray_CLEARFLAGS(arr, NPY_ARRAY_WRITEBACKIFCOPY);
         }
-        Py_DECREF(arr);
     }
 }
 
@@ -228,20 +211,41 @@ PyArray_XDECREF_ERR(PyArrayObject *arr)
 /*
    Check to see if this key in the dictionary is the "title"
    entry of the tuple (i.e. a duplicate dictionary entry in the fields
-   dict.
+   dict).
 */
 
-#define NPY_TITLE_KEY(key, value) ((PyTuple_GET_SIZE((value))==3) && \
-                                   (PyTuple_GET_ITEM((value), 2) == (key)))
+static inline int
+NPY_TITLE_KEY_check(PyObject *key, PyObject *value)
+{
+    PyObject *title;
+    if (PyTuple_Size(value) != 3) {
+        return 0;
+    }
+    title = PyTuple_GetItem(value, 2);
+    if (key == title) {
+        return 1;
+    }
+#ifdef PYPY_VERSION
+    /*
+     * On PyPy, dictionary keys do not always preserve object identity.
+     * Fall back to comparison by value.
+     */
+    if (PyUnicode_Check(title) && PyUnicode_Check(key)) {
+        return PyUnicode_Compare(title, key) == 0 ? 1 : 0;
+    }
+#endif
+    return 0;
+}
 
+/* Macro, for backward compat with "if NPY_TITLE_KEY(key, value) { ..." */
+#define NPY_TITLE_KEY(key, value) (NPY_TITLE_KEY_check((key), (value)))
 
 #define DEPRECATE(msg) PyErr_WarnEx(PyExc_DeprecationWarning,msg,1)
 #define DEPRECATE_FUTUREWARNING(msg) PyErr_WarnEx(PyExc_FutureWarning,msg,1)
-
 
 #ifdef __cplusplus
 }
 #endif
 
 
-#endif /* NPY_NDARRAYOBJECT_H */
+#endif  /* NUMPY_CORE_INCLUDE_NUMPY_NDARRAYOBJECT_H_ */

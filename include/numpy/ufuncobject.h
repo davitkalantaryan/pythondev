@@ -1,5 +1,5 @@
-#ifndef Py_UFUNCOBJECT_H
-#define Py_UFUNCOBJECT_H
+#ifndef NUMPY_CORE_INCLUDE_NUMPY_UFUNCOBJECT_H_
+#define NUMPY_CORE_INCLUDE_NUMPY_UFUNCOBJECT_H_
 
 #include <numpy/npy_math.h>
 #include <numpy/npy_common.h>
@@ -14,8 +14,8 @@ extern "C" {
  */
 typedef void (*PyUFuncGenericFunction)
             (char **args,
-             npy_intp *dimensions,
-             npy_intp *strides,
+             npy_intp const *dimensions,
+             npy_intp const *strides,
              void *innerloopdata);
 
 /*
@@ -66,27 +66,14 @@ typedef int (PyUFunc_TypeResolutionFunc)(
                                 PyArray_Descr **out_dtypes);
 
 /*
- * Given an array of DTypes as returned by the PyUFunc_TypeResolutionFunc,
- * and an array of fixed strides (the array will contain NPY_MAX_INTP for
- * strides which are not necessarily fixed), returns an inner loop
- * with associated auxiliary data.
- *
- * For backwards compatibility, there is a variant of the inner loop
- * selection which returns an inner loop irrespective of the strides,
- * and with a void* static auxiliary data instead of an NpyAuxData *
- * dynamically allocatable auxiliary data.
+ * Legacy loop selector. (This should NOT normally be used and we can expect
+ * that only the `PyUFunc_DefaultLegacyInnerLoopSelector` is ever set).
+ * However, unlike the masked version, it probably still works.
  *
  * ufunc:             The ufunc object.
  * dtypes:            An array which has been populated with dtypes,
  *                    in most cases by the type resolution function
  *                    for the same ufunc.
- * fixed_strides:     For each input/output, either the stride that
- *                    will be used every time the function is called
- *                    or NPY_MAX_INTP if the stride might change or
- *                    is not known ahead of time. The loop selection
- *                    function may use this stride to pick inner loops
- *                    which are optimized for contiguous or 0-stride
- *                    cases.
  * out_innerloop:     Should be populated with the correct ufunc inner
  *                    loop for the given type.
  * out_innerloopdata: Should be populated with the void* data to
@@ -101,15 +88,7 @@ typedef int (PyUFunc_LegacyInnerLoopSelectionFunc)(
                             PyUFuncGenericFunction *out_innerloop,
                             void **out_innerloopdata,
                             int *out_needs_api);
-typedef int (PyUFunc_MaskedInnerLoopSelectionFunc)(
-                            struct _tagPyUFuncObject *ufunc,
-                            PyArray_Descr **dtypes,
-                            PyArray_Descr *mask_dtype,
-                            npy_intp *fixed_strides,
-                            npy_intp fixed_mask_stride,
-                            PyUFunc_MaskedStridedInnerLoopFunc **out_innerloop,
-                            NpyAuxData **out_innerloopdata,
-                            int *out_needs_api);
+
 
 typedef struct _tagPyUFuncObject {
         PyObject_HEAD
@@ -120,7 +99,11 @@ typedef struct _tagPyUFuncObject {
          */
         int nin, nout, nargs;
 
-        /* Identity for reduction, either PyUFunc_One or PyUFunc_Zero */
+        /*
+         * Identity for reduction, any of PyUFunc_One, PyUFunc_Zero
+         * PyUFunc_MinusOne, PyUFunc_None, PyUFunc_ReorderableNone,
+         * PyUFunc_IdentityValue.
+         */
         int identity;
 
         /* Array of one-dimensional core loops */
@@ -167,7 +150,7 @@ typedef struct _tagPyUFuncObject {
         int *core_dim_ixs;
         /*
          * positions of 1st core dimensions of each
-         * argument in core_dim_ixs
+         * argument in core_dim_ixs, equivalent to cumsum(core_num_dims)
          */
         int *core_offsets;
         /* signature string for printing purpose */
@@ -190,11 +173,14 @@ typedef struct _tagPyUFuncObject {
          * but this was never implemented. (This is also why the above
          * selector is called the "legacy" selector.)
          */
-        void *reserved2;
-        /*
-         * A function which returns a masked inner loop for the ufunc.
-         */
-        PyUFunc_MaskedInnerLoopSelectionFunc *masked_inner_loop_selector;
+        #ifndef Py_LIMITED_API
+            vectorcallfunc vectorcall;
+        #else
+            void *vectorcall;
+        #endif
+
+        /* Was previously the `PyUFunc_MaskedInnerLoopSelectionFunc` */
+        void *_always_null_previously_masked_innerloop_selector;
 
         /*
          * List of flags for each operand when ufunc is called by nditer object.
@@ -209,9 +195,41 @@ typedef struct _tagPyUFuncObject {
          * set by nditer object.
          */
         npy_uint32 iter_flags;
+
+        /* New in NPY_API_VERSION 0x0000000D and above */
+    #if NPY_FEATURE_VERSION >= NPY_1_16_API_VERSION
+        /*
+         * for each core_num_dim_ix distinct dimension names,
+         * the possible "frozen" size (-1 if not frozen).
+         */
+        npy_intp *core_dim_sizes;
+
+        /*
+         * for each distinct core dimension, a set of UFUNC_CORE_DIM* flags
+         */
+        npy_uint32 *core_dim_flags;
+
+        /* Identity for reduction, when identity == PyUFunc_IdentityValue */
+        PyObject *identity_value;
+    #endif  /* NPY_FEATURE_VERSION >= NPY_1_16_API_VERSION */
+
+        /* New in NPY_API_VERSION 0x0000000F and above */
+    #if NPY_FEATURE_VERSION >= NPY_1_22_API_VERSION
+        /* New private fields related to dispatching */
+        void *_dispatch_cache;
+        /* A PyListObject of `(tuple of DTypes, ArrayMethod/Promoter)` */
+        PyObject *_loops;
+    #endif
 } PyUFuncObject;
 
 #include "arrayobject.h"
+/* Generalized ufunc; 0x0001 reserved for possible use as CORE_ENABLED */
+/* the core dimension's size will be determined by the operands. */
+#define UFUNC_CORE_DIM_SIZE_INFERRED 0x0002
+/* the core dimension may be absent */
+#define UFUNC_CORE_DIM_CAN_IGNORE 0x0004
+/* flags inferred during execution */
+#define UFUNC_CORE_DIM_MISSING 0x00040000
 
 #define UFUNC_ERR_IGNORE 0
 #define UFUNC_ERR_WARN   1
@@ -276,6 +294,12 @@ typedef struct _tagPyUFuncObject {
  * This case allows reduction with multiple axes at once.
  */
 #define PyUFunc_ReorderableNone -2
+/*
+ * UFunc unit is an identity_value, and the order of operations can be reordered
+ * This case allows reduction with multiple axes at once.
+ */
+#define PyUFunc_IdentityValue -3
+
 
 #define UFUNC_REDUCE 0
 #define UFUNC_ACCUMULATE 1
@@ -306,30 +330,6 @@ typedef struct _loop1d_info {
 
 #define UFUNC_PYVALS_NAME "UFUNC_PYVALS"
 
-#define UFUNC_CHECK_ERROR(arg) \
-        do {if ((((arg)->obj & UFUNC_OBJ_NEEDS_API) && PyErr_Occurred()) || \
-            ((arg)->errormask && \
-             PyUFunc_checkfperr((arg)->errormask, \
-                                (arg)->errobj, \
-                                &(arg)->first))) \
-                goto fail;} while (0)
-
-
-/* keep in sync with ieee754.c.src */
-#if defined(sun) || defined(__BSD__) || defined(__OpenBSD__) || \
-      (defined(__FreeBSD__) && (__FreeBSD_version < 502114)) || \
-      defined(__NetBSD__) || \
-      defined(__GLIBC__) || defined(__APPLE__) || \
-      defined(__CYGWIN__) || defined(__MINGW32__) || \
-      (defined(__FreeBSD__) && (__FreeBSD_version >= 502114)) || \
-      defined(_AIX) || \
-      defined(_MSC_VER) || \
-      defined(__osf__) && defined(__alpha)
-#else
-#define NO_FLOATING_POINT_SUPPORT
-#endif
-
-
 /*
  * THESE MACROS ARE DEPRECATED.
  * Use npy_set_floatstatus_* in the npymath library.
@@ -339,10 +339,6 @@ typedef struct _loop1d_info {
 #define UFUNC_FPE_UNDERFLOW     NPY_FPE_UNDERFLOW
 #define UFUNC_FPE_INVALID       NPY_FPE_INVALID
 
-#define UFUNC_CHECK_STATUS(ret) \
-    { \
-       ret = npy_clear_floatstatus(); \
-    }
 #define generate_divbyzero_error() npy_set_floatstatus_divbyzero()
 #define generate_overflow_error() npy_set_floatstatus_overflow()
 
@@ -356,8 +352,8 @@ typedef struct _loop1d_info {
 #endif
 #endif
 
-
 #ifdef __cplusplus
 }
 #endif
-#endif /* !Py_UFUNCOBJECT_H */
+
+#endif  /* NUMPY_CORE_INCLUDE_NUMPY_UFUNCOBJECT_H_ */
